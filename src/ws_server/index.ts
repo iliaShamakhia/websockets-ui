@@ -31,6 +31,7 @@ wss.on('connection', (ws) => {
         index: randomUUID(),
         name: data.name,
         password: data.password,
+        wins: 0,
       };
       players.push(player);
 
@@ -110,7 +111,28 @@ wss.on('connection', (ws) => {
       }
     }else if (messag['type'] === 'add_ships'){
       let data = JSON.parse(messag.data);
-      console.log(data);
+      //console.log('data ships: ', data.ships.map((s:any) => s.position));
+      /* let allShipPositions: any[] = [...data.ships];
+      data.ships.forEach((ship:any) => {
+        for (let i = 0; i < ship.length - 1; i++){
+          if (ship.direction){
+            allShipPositions.push({
+              position: {x:ship.position.x, y: ship.position.y + i + 1},
+              direction: ship.direction,
+              type: ship.type,
+              length: ship.length,
+            })
+          }else{
+            allShipPositions.push({
+              position: {x:ship.position.x + i + 1, y: ship.position.y},
+              direction: ship.direction,
+              type: ship.type,
+              length: ship.length,
+            })
+          }
+        }
+      }); */
+      //console.log('data ships after addition: ', allShipPositions.map((s:any) => s.position));
       playerCount += 1;
       games[data.gameId][data.indexPlayer] = {
         ships: data.ships,
@@ -118,7 +140,6 @@ wss.on('connection', (ws) => {
       if (playerCount === 2){
         playersIds = Object.keys(games[data.gameId]);
         randomPlayerIndex = Math.floor(Math.random() * playersIds.length);
-        console.log('random player index is: ',randomPlayerIndex);
         wss.clients.forEach(function each(client) {
           if (client.readyState === WebSocket.OPEN) {
             let user = connectionData.get(client);
@@ -145,8 +166,132 @@ wss.on('connection', (ws) => {
       }
     }else if (messag['type'] === 'attack'){
       let data = JSON.parse(messag.data);
-      console.log('attack data: ',data);
+      let opponentIndex = playersIds.findIndex(id => id !== data.indexPlayer);
+      console.log('locations: ',data.x, data.y);
+      console.log('opponent index: ', opponentIndex);
+      console.log('oponent ships: ', games[data.gameId][playersIds[opponentIndex]]);
+      let oponentShips = games[data.gameId][playersIds[opponentIndex]].ships
+      console.log('oponent ships positions: ', oponentShips.filter((ship:any) => ship.position));
+      
+      let shipPos = oponentShips.find((ship:any) => {
+        if (ship.direction){
+          if ((data.y >= ship.position.y) && (data.y <= (data.y + ship.length))){
+            return ship;
+          }
+        }else{
+          if ((data.x >= ship.position.x) && (data.x <= (data.x + ship.length))){
+            return ship;
+          }
+        }
+        return undefined;
+      });
+      console.log('hit or miss: ', shipPos);
+      if (shipPos){
+        shipPos.length -= 1;
+        let allSunk = oponentShips.every((ship:any) => ship.length === 0);
+        if (allSunk){
+          wss.clients.forEach(function each(client) {
+            if (client.readyState === WebSocket.OPEN) {
+              let winner = players.find((p:any) => p.index === data.indexPlayer).name
+              let loser = players.find((p:any) => p.index === playersIds[opponentIndex]).name
+              winner.wins += 1;
+              client.send(JSON.stringify({
+                  type: "finish",
+                  data: JSON.stringify({
+                    winPlayer: data.indexPlayer,
+                  }),
+                  id: 0,
+              }));
+              client.send(JSON.stringify({
+                type: "update_winners",
+                data: JSON.stringify([
+                  {
+                    name: winner.name,
+                    wins: winner.wins,
+                  },
+                  {
+                    name: loser.name,
+                    wins: loser.wins,
+                  }
+                ]),
+                id: 0,
+              }));
+            }
+          });
+          return;
+        }
+        if (shipPos.length === 0){{
+          wss.clients.forEach(function each(client) {
+            if (client.readyState === WebSocket.OPEN) {
+
+              client.send(JSON.stringify({
+                  type: "attack",
+                  data: JSON.stringify({
+                    position: JSON.stringify({x: data.x, y: data.y}),
+                    currentPlayer: data.indexPlayer,
+                    status: 'killed',
+                  }),
+                  id: 0,
+              }));
+              client.send(JSON.stringify({
+                  type: "turn",
+                  data: JSON.stringify({
+                          currentPlayer: playersIds[opponentIndex]
+                      }),
+                  id: 0,
+              }));
+            }
+          });
+          return;
+        }
+        console.log('oponent ships after hit: ', games[data.gameId][playersIds[opponentIndex]]);
+        wss.clients.forEach(function each(client) {
+          if (client.readyState === WebSocket.OPEN) {
+            let user = connectionData.get(client);
+
+            client.send(JSON.stringify({
+                type: "attack",
+                data: JSON.stringify({
+                  position: {x: data.x, y: data.y},
+                  currentPlayer: data.indexPlayer,
+                  status: 'shot',
+                }),
+                id: 0,
+            }));
+            client.send(JSON.stringify({
+                type: "turn",
+                data: JSON.stringify({
+                        currentPlayer: data.indexPlayer
+                    }),
+                id: 0,
+            }));
+          }
+        });
+      }else{
+        wss.clients.forEach(function each(client) {
+            if (client.readyState === WebSocket.OPEN) {
+
+              client.send(JSON.stringify({
+                  type: "attack",
+                  data: JSON.stringify({
+                    position: {x: data.x, y: data.y},
+                    currentPlayer: data.indexPlayer,
+                    status: 'miss',
+                  }),
+                  id: 0,
+              }));
+              client.send(JSON.stringify({
+                  type: "turn",
+                  data: JSON.stringify({
+                          currentPlayer: playersIds[opponentIndex]
+                      }),
+                  id: 0,
+              }));
+            }
+          });
+      }
     }
+  }
   });
 });
 
