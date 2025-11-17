@@ -96,6 +96,11 @@ wss.on('connection', (ws: WS) => {
       }
 
       const player = players.get(boundPlayerName)!;
+
+      if (room.roomUsers.some(user => user.index === player.index)){
+        return;
+      }
+      
       room.roomUsers.push({ name: player.name, index: player.index });
 
       const idGame = genIndex('g_');
