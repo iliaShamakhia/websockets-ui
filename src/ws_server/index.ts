@@ -1,17 +1,10 @@
 import http from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { cellsFromShip, genIndex, neighborCellsForShip, sendJSON, updateRoomsBroadcast, updateWinnersBroadcast } from './utils.ts';
-import type { Game, GamePlayer, PlayerRecord, Room, ShipSpec, WS } from './types.ts';
+import type { Game, GamePlayer, Room, WS } from './types.ts';
+import { games, players, playersByIndex, rooms } from './data.ts';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
-
-// In-memory storage
-const players = new Map<string, PlayerRecord>();
-const playersByIndex = new Map<string, PlayerRecord>();
-
-const rooms = new Map<string, Room>();
-
-const games = new Map<string, Game>();
 
 const wsServer = http.createServer();
 const wss = new WebSocketServer({ server: wsServer }, () => {
@@ -187,7 +180,6 @@ wss.on('connection', (ws: WS) => {
       }
 
       const opponent = Array.from(game.players.values()).find(p => p.idPlayer !== shooter.idPlayer)!;
-      console.log('opponent: ', opponent);
 
       if (!opponent.shipCells) {
         sendJSON(ws, { type: 'error', data: 'opponent ships not ready', id: 0 });
