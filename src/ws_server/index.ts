@@ -1,316 +1,303 @@
 import http from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
-import { randomUUID } from 'crypto';
+import { cellsFromShip, genIndex, neighborCellsForShip, sendJSON, updateRoomsBroadcast, updateWinnersBroadcast } from './utils.ts';
+import type { Game, GamePlayer, PlayerRecord, Room, ShipSpec, WS } from './types.ts';
+
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+
+// In-memory storage
+const players = new Map<string, PlayerRecord>();
+const playersByIndex = new Map<string, PlayerRecord>();
+
+const rooms = new Map<string, Room>();
+
+const games = new Map<string, Game>();
 
 const wsServer = http.createServer();
+const wss = new WebSocketServer({ server: wsServer }, () => {
+  console.log(`WebSocket server started on port ${PORT}`);
+});
 
-const wss = new WebSocketServer({ server: wsServer });
+wss.on('connection', (ws: WS) => {
+  console.log('new ws connection established');
+  let boundPlayerName: string | null = null;
 
-const rooms:any = [];
+  ws.on('message', (message: Buffer) => {
+    let msgStr = '';
+    msgStr = message.toString();
 
-const players:any = [];
+    console.log('<-', msgStr);
 
-const games:any = {};
-
-const connectionData = new Map();
-
-let playerIndex = 0;
-let gameIndex = 0;
-let playerCount = 0;
-let playersIds: string[];
-let randomPlayerIndex: number;
-
-wss.on('connection', (ws) => {
-  ws.on('message', (message:any) => {
-    console.log(`Received message: ${message}`); 
-    let messag=JSON.parse(message);
-    
-    if (messag['type'] === 'reg'){
-      let data = JSON.parse(messag.data);
-      let player = {
-        index: randomUUID(),
-        name: data.name,
-        password: data.password,
-        wins: 0,
-      };
-      players.push(player);
-
-      connectionData.set(ws, { data: player });
-
-      ws.send(JSON.stringify({
-        type: "reg",
-        data:
-            JSON.stringify({
-                name: data.name,
-                index:  player.index,
-                error: false,
-                errorText: ' ',
-            }),
-        id: 0
-      }));
-      if (players.length > 1){
-        playerIndex += 1;
-      }
-      wss.clients.forEach(function each(client) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({
-            type: "update_room",
-            data: JSON.stringify(rooms),
-            id: 0,
-          }));
-          client.send(JSON.stringify({
-            type: "update_winners",
-            data: JSON.stringify(rooms),
-            id: 0,
-          }));
-        }
-      });
-    }else if (messag['type'] === 'create_room'){
-      let room: {roomId:string, roomUsers: any[]} = {
-        roomId: randomUUID(),
-        roomUsers: [],
-      };
-      const wsConn = connectionData.get(ws);
-      room.roomUsers.push({name: wsConn.data.name, index: wsConn.data.index});
-      rooms.push(room);
-      ws.send(JSON.stringify({
-          type: "update_room",
-          data: JSON.stringify(rooms),
-          id: 0,
-      }));
-    }else if (messag['type'] === 'add_user_to_room'){
-      let data = JSON.parse(messag.data);
-      let roomIndex = rooms.findIndex((room:any) => room.roomId === data.indexRoom);
-      let room = rooms[roomIndex];
-      if (room.roomUsers.length < 2){
-        const wsConn = connectionData.get(ws);
-        room.roomUsers.push({name: wsConn.data.name, index: wsConn.data.index});
-        rooms.splice(roomIndex, 1);
-        let gameId = randomUUID();
-        
-        games[gameId] = {};
-
-        wss.clients.forEach(function each(client) {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-                type: "update_room",
-                data: JSON.stringify(rooms),
-                id: 0,
-            }));
-            let user = connectionData.get(client);
-            client.send(JSON.stringify({
-              type: 'create_game',
-              data:
-                  JSON.stringify({
-                      idGame: gameId,  
-                      idPlayer: user.data.index,
-                  })
-            }));
-          }
-        });
-      }
-    }else if (messag['type'] === 'add_ships'){
-      let data = JSON.parse(messag.data);
-      //console.log('data ships: ', data.ships.map((s:any) => s.position));
-      /* let allShipPositions: any[] = [...data.ships];
-      data.ships.forEach((ship:any) => {
-        for (let i = 0; i < ship.length - 1; i++){
-          if (ship.direction){
-            allShipPositions.push({
-              position: {x:ship.position.x, y: ship.position.y + i + 1},
-              direction: ship.direction,
-              type: ship.type,
-              length: ship.length,
-            })
-          }else{
-            allShipPositions.push({
-              position: {x:ship.position.x + i + 1, y: ship.position.y},
-              direction: ship.direction,
-              type: ship.type,
-              length: ship.length,
-            })
-          }
-        }
-      }); */
-      //console.log('data ships after addition: ', allShipPositions.map((s:any) => s.position));
-      playerCount += 1;
-      games[data.gameId][data.indexPlayer] = {
-        ships: data.ships,
-      };
-      if (playerCount === 2){
-        playersIds = Object.keys(games[data.gameId]);
-        randomPlayerIndex = Math.floor(Math.random() * playersIds.length);
-        wss.clients.forEach(function each(client) {
-          if (client.readyState === WebSocket.OPEN) {
-            let user = connectionData.get(client);
-
-            client.send(JSON.stringify({
-                type: "start_game",
-                data: JSON.stringify({
-                  ships: games[data.gameId][user.data.index].ships,
-                  currentPlayerIndex: user.data.index
-                }),
-                id: 0,
-            }));
-            client.send(JSON.stringify({
-                type: "turn",
-                data: JSON.stringify({
-                        currentPlayer: playersIds[randomPlayerIndex]
-                    }),
-                id: 0,
-            }));
-          }
-        });
-        playerCount = 0;
-
-      }
-    }else if (messag['type'] === 'attack'){
-      let data = JSON.parse(messag.data);
-      let opponentIndex = playersIds.findIndex(id => id !== data.indexPlayer);
-      console.log('locations: ',data.x, data.y);
-      console.log('opponent index: ', opponentIndex);
-      console.log('oponent ships: ', games[data.gameId][playersIds[opponentIndex]]);
-      let oponentShips = games[data.gameId][playersIds[opponentIndex]].ships
-      console.log('oponent ships positions: ', oponentShips.filter((ship:any) => ship.position));
-      
-      let shipPos = oponentShips.find((ship:any) => {
-        if (ship.direction){
-          if ((data.y >= ship.position.y) && (data.y <= (data.y + ship.length))){
-            return ship;
-          }
-        }else{
-          if ((data.x >= ship.position.x) && (data.x <= (data.x + ship.length))){
-            return ship;
-          }
-        }
-        return undefined;
-      });
-      console.log('hit or miss: ', shipPos);
-      if (shipPos){
-        shipPos.length -= 1;
-        let allSunk = oponentShips.every((ship:any) => ship.length === 0);
-        if (allSunk){
-          wss.clients.forEach(function each(client) {
-            if (client.readyState === WebSocket.OPEN) {
-              let winner = players.find((p:any) => p.index === data.indexPlayer).name
-              let loser = players.find((p:any) => p.index === playersIds[opponentIndex]).name
-              winner.wins += 1;
-              client.send(JSON.stringify({
-                  type: "finish",
-                  data: JSON.stringify({
-                    winPlayer: data.indexPlayer,
-                  }),
-                  id: 0,
-              }));
-              client.send(JSON.stringify({
-                type: "update_winners",
-                data: JSON.stringify([
-                  {
-                    name: winner.name,
-                    wins: winner.wins,
-                  },
-                  {
-                    name: loser.name,
-                    wins: loser.wins,
-                  }
-                ]),
-                id: 0,
-              }));
-            }
-          });
-          return;
-        }
-        if (shipPos.length === 0){{
-          wss.clients.forEach(function each(client) {
-            if (client.readyState === WebSocket.OPEN) {
-
-              client.send(JSON.stringify({
-                  type: "attack",
-                  data: JSON.stringify({
-                    position: JSON.stringify({x: data.x, y: data.y}),
-                    currentPlayer: data.indexPlayer,
-                    status: 'killed',
-                  }),
-                  id: 0,
-              }));
-              client.send(JSON.stringify({
-                  type: "turn",
-                  data: JSON.stringify({
-                          currentPlayer: playersIds[opponentIndex]
-                      }),
-                  id: 0,
-              }));
-            }
-          });
-          return;
-        }
-        console.log('oponent ships after hit: ', games[data.gameId][playersIds[opponentIndex]]);
-        wss.clients.forEach(function each(client) {
-          if (client.readyState === WebSocket.OPEN) {
-            let user = connectionData.get(client);
-
-            client.send(JSON.stringify({
-                type: "attack",
-                data: JSON.stringify({
-                  position: {x: data.x, y: data.y},
-                  currentPlayer: data.indexPlayer,
-                  status: 'shot',
-                }),
-                id: 0,
-            }));
-            client.send(JSON.stringify({
-                type: "turn",
-                data: JSON.stringify({
-                        currentPlayer: data.indexPlayer
-                    }),
-                id: 0,
-            }));
-          }
-        });
-      }else{
-        wss.clients.forEach(function each(client) {
-            if (client.readyState === WebSocket.OPEN) {
-
-              client.send(JSON.stringify({
-                  type: "attack",
-                  data: JSON.stringify({
-                    position: {x: data.x, y: data.y},
-                    currentPlayer: data.indexPlayer,
-                    status: 'miss',
-                  }),
-                  id: 0,
-              }));
-              client.send(JSON.stringify({
-                  type: "turn",
-                  data: JSON.stringify({
-                          currentPlayer: playersIds[opponentIndex]
-                      }),
-                  id: 0,
-              }));
-            }
-          });
-      }
+    let msg: any;
+    try {
+      msg = JSON.parse(msgStr);
+    } catch (e) {
+      sendJSON(ws, { type: 'error', data: { errorText: 'invalid json' }, id: 0 });
+      return;
     }
-  }
+
+    let { type, data } = msg;
+    data = data && JSON.parse(data);
+
+    if (type === 'reg') {
+
+      const { name, password } = data;
+
+      if (!name || !password) {
+        sendJSON(ws, { type: 'reg', data: { name, index: null, error: true, errorText: 'missing fields' }, id: 0 });
+        return;
+      }
+
+      let player = players.get(name);
+
+      if (!player) {
+        const index = genIndex('p_');
+        player = { name, password, index, wins: 0, socket: ws };
+        players.set(name, player);
+        playersByIndex.set(index, player);
+      } else {
+        if (player.password !== password) {
+          sendJSON(ws, { type: 'reg', data: { name, index: null, error: true, errorText: 'wrong password' }, id: 0 });
+          return;
+        }
+        player.socket = ws;
+      }
+
+      boundPlayerName = name;
+
+      sendJSON(ws, { type: 'reg', data: { name, index: player.index, error: false, errorText: '' }, id: 0 });
+      updateWinnersBroadcast(players);
+      updateRoomsBroadcast(rooms, players);
+
+    } else if (type === 'create_room') {
+
+      if (!boundPlayerName) {
+        sendJSON(ws, { type: 'error', data: 'not logged in', id: 0 });
+        return;
+      }
+
+      const player = players.get(boundPlayerName)!;
+      const roomId = genIndex('r_');
+      const room: Room = { roomId, roomUsers: [{ name: player.name, index: player.index }] };
+      rooms.set(roomId, room);
+      updateRoomsBroadcast(rooms, players);
+
+    } else if (type === 'add_user_to_room') {
+
+      if (!boundPlayerName) {
+        sendJSON(ws, { type: 'error', data: 'not logged in', id: 0 });
+        return;
+      }
+
+      const { indexRoom } = data;
+      const room = rooms.get(indexRoom);
+
+      if (!room) {
+        sendJSON(ws, { type: 'error', data: 'room not found', id: 0 });
+        return;
+      }
+
+      if (room.roomUsers.length >= 2) {
+        sendJSON(ws, { type: 'error', data: 'room full', id: 0 });
+        return;
+      }
+
+      const player = players.get(boundPlayerName)!;
+      room.roomUsers.push({ name: player.name, index: player.index });
+
+      const idGame = genIndex('g_');
+      const game: Game = { idGame, players: new Map() };
+  
+      for (const u of room.roomUsers) {
+        const idPlayer = u.index;
+        const gp: GamePlayer = { idPlayer, playerIndex: u.index, killedShipsCount: 0 };
+        game.players.set(idPlayer, gp);
+        
+        const rec = playersByIndex.get(u.index);
+        if (rec && rec.socket && rec.socket.readyState === WebSocket.OPEN) {
+          sendJSON(rec.socket, { type: 'create_game', data: { idGame, idPlayer }, id: 0 });
+        }
+      }
+
+      games.set(idGame, game);
+      room.gameId = idGame;
+
+      rooms.delete(room.roomId);
+      updateRoomsBroadcast(rooms, players);
+
+    } else if (type === 'add_ships') {
+
+      const { gameId, ships, indexPlayer } = data;
+      const game = games.get(gameId);
+      if (!game) {
+        sendJSON(ws, { type: 'error', data: 'game not found', id: 0 });
+        return;
+      }
+
+      const gp = Array.from(game.players.values()).find(p => p.playerIndex === indexPlayer);
+      if (!gp) {
+        sendJSON(ws, { type: 'error', data: 'player not in game', id: 0 });
+        return;
+      }
+
+      gp.ships = ships;
+      gp.shipCells = new Set<string>();
+      for (const s of ships) {
+        for (const c of cellsFromShip(s)){
+          gp.shipCells.add(c);
+        }
+      }
+     
+      const allPlaced = Array.from(game.players.values()).every(p => p.ships && p.shipCells && p.shipCells.size > 0);
+      if (allPlaced) {
+      
+        const playerIds = Array.from(game.players.keys());
+        const currentPlayerId = playerIds[Math.floor(Math.random() * playerIds.length)];
+        game.currentPlayerId = currentPlayerId;
+        
+        for (const [idPlayer, gpItem] of game.players.entries()) {
+          const pr = playersByIndex.get(gpItem.playerIndex);
+          if (pr && pr.socket && pr.socket.readyState === WebSocket.OPEN) {
+            sendJSON(pr.socket, { type: 'start_game', data: { ships: gpItem.ships, currentPlayerIndex: game.currentPlayerId }, id: 0 });
+            sendJSON(pr.socket, { type: 'turn', data: { currentPlayer: game.currentPlayerId }, id: 0 });
+          }
+        }
+      } else {
+        sendJSON(ws, { type: 'add_ships', data: { ok: true }, id: 0 });
+      }
+    } else if (type === 'attack' || type === 'randomAttack') {
+
+      const isRandom = type === 'randomAttack';
+      const { gameId, x, y, indexPlayer } = data;
+      const game = games.get(gameId);
+      if (!game) {
+        sendJSON(ws, { type: 'error', data: 'game not found', id: 0 });
+        return;
+      }
+
+      const shooter = Array.from(game.players.values()).find(p => p.playerIndex === indexPlayer);
+      if (!shooter) {
+        sendJSON(ws, { type: 'error', data: 'player not in game', id: 0 });
+        return;
+      }
+
+      if (game.currentPlayerId && game.currentPlayerId !== shooter.idPlayer) {
+        sendJSON(ws, { type: 'turn', data: { currentPlayer: game.currentPlayerId }, id: 0 });
+        return;
+      }
+
+      const opponent = Array.from(game.players.values()).find(p => p.idPlayer !== shooter.idPlayer)!;
+      console.log('opponent: ', opponent);
+
+      if (!opponent.shipCells) {
+        sendJSON(ws, { type: 'error', data: 'opponent ships not ready', id: 0 });
+        return;
+      }
+
+      let tx = x, ty = y;
+     
+      if (isRandom) {
+        tx = Math.floor(Math.random() * 10);
+        ty = Math.floor(Math.random() * 10);
+      }
+
+      const key = `${tx},${ty}`;
+      let status: 'miss'|'shot'|'killed' = 'miss';
+      if (opponent.shipCells.has(key)) {
+
+        opponent.shipCells.delete(key);
+        status = 'shot';
+
+        if (opponent.ships) {
+          for (const s of opponent.ships) {
+            const sc = cellsFromShip(s);
+            const alive = sc.some(c => opponent.shipCells!.has(c));
+            if (!alive && sc.includes(key)) {
+              status = 'killed';
+              opponent.killedShipsCount = (opponent.killedShipsCount || 0) + 1;
+              const neigh = neighborCellsForShip(s);
+              for (const n of neigh) {
+                const [nx, ny] = n.split(',').map(Number);
+                for (const gpItem of game.players.values()) {
+                  const pr = playersByIndex.get(gpItem.playerIndex);
+                  if (pr && pr.socket && pr.socket.readyState === WebSocket.OPEN) {
+                    sendJSON(pr.socket, { type: 'attack', data: { position: { x: nx, y: ny }, currentPlayer: shooter.idPlayer, status: 'miss' }, id: 0 });
+                  }
+                }
+              }
+              break;
+            }
+          }
+        }
+      } else {
+        status = 'miss';
+      }
+
+      for (const gpItem of game.players.values()) {
+        const pr = playersByIndex.get(gpItem.playerIndex);
+
+        if (pr && pr.socket && pr.socket.readyState === WebSocket.OPEN) {
+          sendJSON(pr.socket, { type: 'attack', data: { position: { x: tx, y: ty }, currentPlayer: shooter.idPlayer, status }, id: 0 });
+        }
+      }
+
+      if (status === 'miss') {
+        const other = Array.from(game.players.keys()).find(id => id !== shooter.idPlayer)!;
+        game.currentPlayerId = other;
+      } else {
+        game.currentPlayerId = shooter.idPlayer;
+      }
+
+      for (const gpItem of game.players.values()) {
+        const pr = playersByIndex.get(gpItem.playerIndex);
+        if (pr && pr.socket && pr.socket.readyState === WebSocket.OPEN) {
+          sendJSON(pr.socket, { type: 'turn', data: { currentPlayer: game.currentPlayerId }, id: 0 });
+        }
+      }
+ 
+      const oppRemaining = opponent.shipCells.size;
+
+      if (oppRemaining === 0) {
+        const winnerPlayer = playersByIndex.get(shooter.playerIndex);
+        if (winnerPlayer) { winnerPlayer.wins += 1; }
+        game.finished = true;
+
+        for (const gpItem of game.players.values()) {
+          const pr = playersByIndex.get(gpItem.playerIndex);
+
+          if (pr && pr.socket && pr.socket.readyState === WebSocket.OPEN) {
+            sendJSON(pr.socket, { type: 'finish', data: { winPlayer: shooter.idPlayer }, id: 0 });
+          }
+        }
+        updateWinnersBroadcast(players);
+      }
+    } else {
+      sendJSON(ws, { type: 'error', data: 'unknown command', id: 0 });
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('ws closed for', boundPlayerName);
+    if (boundPlayerName) {
+      const p = players.get(boundPlayerName);
+      if (p) p.socket = null;
+    }
   });
 });
 
+wss.on('listening', () => {
+  console.log('wss listening');
+});
 
-function deepParse(obj:any) {
-  for (const key in obj) {
-    if (typeof obj[key] === 'string') {
-      try {
-        obj[key] = JSON.parse(obj[key]);
-        deepParse(obj[key]);
-      } catch (e) {
-        // Not JSON, leave as is
-      }
-    } else if (typeof obj[key] === 'object') {
-      deepParse(obj[key]);
-    }
-  }
+function gracefulShutdown() {
+  console.log('Shutting down websocket server gracefully...');
+  wss.clients?.forEach((c:any) => {
+    try { c.close(); } catch (e) {}
+  });
+  process.exit(0);
 }
 
-
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
 
 export { wsServer };
